@@ -25,6 +25,11 @@ int turnSpeed = 150;
 int moveDuration = 1000;
 int turnDuration = 700;
 
+// ตัวแปรปรับเทียบความเร็วมอเตอร์
+int leftMotorOffset = 0;   // ค่าปรับสำหรับมอเตอร์ซ้าย (-50 ถึง +50)
+int rightMotorOffset = 0;  // ค่าปรับสำหรับมอเตอร์ขวา (-50 ถึง +50)
+bool calibrationMode = false;  // โหมดปรับเทียบ
+
 // ตัวแปร Ultrasonic
 int obstacleDistance = 20;  // ระยะหยุด (เซนติเมตร)
 bool obstacleDetectionEnabled = true;  // เปิด/ปิดการตรวจจับสิ่งกีดขวาง
@@ -52,6 +57,7 @@ bool continuousForwardActive = false;  // ตรวจสอบว่าเค�
 String createMainHTML();
 String createControlHTML();
 String createSequenceHTML();
+String createCalibrationHTML();
 String createLogHTML();
 void handleWebServer();
 void handleSequenceExecution();
@@ -139,41 +145,62 @@ void stopMotors() {
   digitalWrite(MOTOR_RIGHT_DIR2, LOW);
 }
 
+// ฟังก์ชันคำนวณความเร็วที่ปรับเทียบแล้ว
+int getCalibratedLeftSpeed(int baseSpeed) {
+  return constrain(baseSpeed + leftMotorOffset, 0, 255);
+}
+
+int getCalibratedRightSpeed(int baseSpeed) {
+  return constrain(baseSpeed + rightMotorOffset, 0, 255);
+}
+
 // ฟังก์ชันเคลื่อนที่แบบต่อเนื่อง (สำหรับกดค้าง)
 void startForward(int speed) {
+  int leftSpeed = getCalibratedLeftSpeed(speed);
+  int rightSpeed = getCalibratedRightSpeed(speed);
+  
   digitalWrite(MOTOR_LEFT_DIR1, HIGH);
   digitalWrite(MOTOR_LEFT_DIR2, LOW);
   digitalWrite(MOTOR_RIGHT_DIR1, HIGH);
   digitalWrite(MOTOR_RIGHT_DIR2, LOW);
-  analogWrite(MOTOR_LEFT_PWM, speed);
-  analogWrite(MOTOR_RIGHT_PWM, speed);
+  analogWrite(MOTOR_LEFT_PWM, leftSpeed);
+  analogWrite(MOTOR_RIGHT_PWM, rightSpeed);
 }
 
 void startBackward(int speed) {
+  int leftSpeed = getCalibratedLeftSpeed(speed);
+  int rightSpeed = getCalibratedRightSpeed(speed);
+  
   digitalWrite(MOTOR_LEFT_DIR1, LOW);
   digitalWrite(MOTOR_LEFT_DIR2, HIGH);
   digitalWrite(MOTOR_RIGHT_DIR1, LOW);
   digitalWrite(MOTOR_RIGHT_DIR2, HIGH);
-  analogWrite(MOTOR_LEFT_PWM, speed);
-  analogWrite(MOTOR_RIGHT_PWM, speed);
+  analogWrite(MOTOR_LEFT_PWM, leftSpeed);
+  analogWrite(MOTOR_RIGHT_PWM, rightSpeed);
 }
 
 void startTurnLeft(int speed) {
+  int leftSpeed = getCalibratedLeftSpeed(speed);
+  int rightSpeed = getCalibratedRightSpeed(speed);
+  
   digitalWrite(MOTOR_LEFT_DIR1, LOW);
   digitalWrite(MOTOR_LEFT_DIR2, HIGH);
   digitalWrite(MOTOR_RIGHT_DIR1, HIGH);
   digitalWrite(MOTOR_RIGHT_DIR2, LOW);
-  analogWrite(MOTOR_LEFT_PWM, speed);
-  analogWrite(MOTOR_RIGHT_PWM, speed);
+  analogWrite(MOTOR_LEFT_PWM, leftSpeed);
+  analogWrite(MOTOR_RIGHT_PWM, rightSpeed);
 }
 
 void startTurnRight(int speed) {
+  int leftSpeed = getCalibratedLeftSpeed(speed);
+  int rightSpeed = getCalibratedRightSpeed(speed);
+  
   digitalWrite(MOTOR_LEFT_DIR1, HIGH);
   digitalWrite(MOTOR_LEFT_DIR2, LOW);
   digitalWrite(MOTOR_RIGHT_DIR1, LOW);
   digitalWrite(MOTOR_RIGHT_DIR2, HIGH);
-  analogWrite(MOTOR_LEFT_PWM, speed);
-  analogWrite(MOTOR_RIGHT_PWM, speed);
+  analogWrite(MOTOR_LEFT_PWM, leftSpeed);
+  analogWrite(MOTOR_RIGHT_PWM, rightSpeed);
 }
 
 // ฟังก์ชันเคลื่อนที่แบบมีระยะเวลา (สำหรับ sequence และ test)
@@ -331,6 +358,39 @@ void executeCommand(String command) {
     String status = obstacleDetectionEnabled ? "ENABLED" : "DISABLED";
     addLog("🔄 Obstacle detection " + status);
   }
+  // คำสั่งปรับเทียบมอเตอร์
+  else if (command == "CAL_LEFT_PLUS") {
+    leftMotorOffset = constrain(leftMotorOffset + 5, -50, 50);
+    addLog("🔧 Left motor offset: " + String(leftMotorOffset) + " (increased)");
+  }
+  else if (command == "CAL_LEFT_MINUS") {
+    leftMotorOffset = constrain(leftMotorOffset - 5, -50, 50);
+    addLog("🔧 Left motor offset: " + String(leftMotorOffset) + " (decreased)");
+  }
+  else if (command == "CAL_RIGHT_PLUS") {
+    rightMotorOffset = constrain(rightMotorOffset + 5, -50, 50);
+    addLog("🔧 Right motor offset: " + String(rightMotorOffset) + " (increased)");
+  }
+  else if (command == "CAL_RIGHT_MINUS") {
+    rightMotorOffset = constrain(rightMotorOffset - 5, -50, 50);
+    addLog("🔧 Right motor offset: " + String(rightMotorOffset) + " (decreased)");
+  }
+  else if (command == "CAL_TEST") {
+    addLog("🧪 Testing motor calibration - moving forward for 3 seconds");
+    addLog("📊 Left offset: " + String(leftMotorOffset) + ", Right offset: " + String(rightMotorOffset));
+    timedForward(moveSpeed, 3000);
+    addLog("✅ Calibration test completed");
+  }
+  else if (command == "CAL_RESET") {
+    leftMotorOffset = 0;
+    rightMotorOffset = 0;
+    addLog("🔄 Motor calibration reset to defaults");
+  }
+  else if (command == "CAL_MODE") {
+    calibrationMode = !calibrationMode;
+    String status = calibrationMode ? "ENABLED" : "DISABLED";
+    addLog("🔧 Calibration mode " + status);
+  }
 }
 
 // ========== SEQUENCE FUNCTIONS ==========
@@ -487,7 +547,7 @@ String createMainHTML() {
   html += "<button onclick='location.href=\"/\"'>🏠 Main</button>";
   html += "<button onclick='location.href=\"/control\"'>🎮 Control</button>";
   html += "<button onclick='location.href=\"/seq\"'>📝 Sequence</button>";
-  html += "<button onclick='location.href=\"/log\"'>📋 Log</button>";
+  html += "<button onclick='location.href=\"/calibration\"'>🔧 Calibration</button>";
   html += "</div>";
   
   // Motor Settings
@@ -839,129 +899,171 @@ String createLogHTML() {
   return html;
 }
 
-// ========== URL PARAMETER EXTRACTION ==========
-
-// Extract parameter จาก URL
-String extractParameter(String request, String paramName) {
-  int startPos = request.indexOf(paramName + "=");
-  if (startPos == -1) return "";
+// สร้างหน้า Motor Calibration
+String createCalibrationHTML() {
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'><title>Motor Calibration</title>";
+  html += "<style>";
+  html += "body{font-family:Arial;background:#1a1a2e;color:white;margin:5px;font-size:16px}";
+  html += "h2{color:#4CAF50;text-align:center;margin:8px 0;font-size:20px}";
+  html += ".nav{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px;margin:8px 0}";
+  html += ".nav button{padding:8px 3px;background:#16213e;border:1px solid #4CAF50;color:white;border-radius:5px;font-size:12px}";
+  html += ".nav button:hover{background:#4CAF50}";
+  html += ".section{background:#16213e;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #333}";
+  html += "h3{margin:8px 0;font-size:16px;color:#4CAF50}";
+  html += ".cal-row{display:flex;align-items:center;justify-content:space-between;margin:8px 0;padding:8px;background:#0f3460;border-radius:5px}";
+  html += ".cal-label{font-size:14px;min-width:100px}";
+  html += ".cal-value{font-size:18px;font-weight:bold;color:#4CAF50;min-width:40px;text-align:center}";
+  html += ".cal-buttons{display:flex;gap:5px}";
+  html += "button{padding:8px 12px;background:#4CAF50;border:none;color:white;border-radius:5px;cursor:pointer;font-size:14px}";
+  html += "button:hover{background:#45a049}";
+  html += ".btn-small{padding:6px 10px;font-size:12px}";
+  html += ".btn-test{background:#ff9800;width:100%;margin:10px 0}";
+  html += ".btn-test:hover{background:#f57c00}";
+  html += ".btn-reset{background:#f44336}";
+  html += ".btn-reset:hover{background:#d32f2f}";
+  html += ".info{background:#0f1419;padding:10px;border-radius:5px;font-size:13px;margin:8px 0;border-left:3px solid #4CAF50}";
+  html += "@media(max-width:600px){";
+  html += ".cal-row{flex-direction:column;gap:8px;text-align:center}";
+  html += ".cal-buttons{justify-content:center}";
+  html += ".nav{grid-template-columns:1fr 1fr}";
+  html += ".nav button{font-size:11px;padding:6px 2px}";
+  html += "}";
+  html += "</style></head><body>";
   
-  startPos += paramName.length() + 1;
-  int endPos = request.indexOf("&", startPos);
-  if (endPos == -1) endPos = request.indexOf(" ", startPos);
+  html += "<h2>🔧 Motor Calibration</h2>";
   
-  return request.substring(startPos, endPos);
+  // Navigation
+  html += "<div class='nav'>";
+  html += "<button onclick='location.href=\"/\"'>🏠 Main</button>";
+  html += "<button onclick='location.href=\"/control\"'>🎮 Control</button>";
+  html += "<button onclick='location.href=\"/seq\"'>📝 Sequence</button>";
+  html += "<button onclick='location.href=\"/calibration\"'>🔧 Calibration</button>";
+  html += "</div>";
+  
+  // Current Settings
+  html += "<div class='section'>";
+  html += "<h3>📊 Current Calibration</h3>";
+  html += "<div class='cal-row'>";
+  html += "<span class='cal-label'>Left Motor Offset:</span>";
+  html += "<span class='cal-value'>" + String(leftMotorOffset) + "</span>";
+  html += "<div class='cal-buttons'>";
+  html += "<button class='btn-small' onclick='sendCommand(\"CAL_LEFT_MINUS\")'>-5</button>";
+  html += "<button class='btn-small' onclick='sendCommand(\"CAL_LEFT_PLUS\")'>+5</button>";
+  html += "</div>";
+  html += "</div>";
+  
+  html += "<div class='cal-row'>";
+  html += "<span class='cal-label'>Right Motor Offset:</span>";
+  html += "<span class='cal-value'>" + String(rightMotorOffset) + "</span>";
+  html += "<div class='cal-buttons'>";
+  html += "<button class='btn-small' onclick='sendCommand(\"CAL_RIGHT_MINUS\")'>-5</button>";
+  html += "<button class='btn-small' onclick='sendCommand(\"CAL_RIGHT_PLUS\")'>+5</button>";
+  html += "</div>";
+  html += "</div>";
+  html += "</div>";
+  
+  // Test & Reset
+  html += "<div class='section'>";
+  html += "<h3>🧪 Testing</h3>";
+  html += "<button class='btn-test' onclick='sendCommand(\"CAL_TEST\")'>🧪 Test Current Settings (3 sec forward)</button>";
+  html += "<button class='btn-reset' onclick='confirmReset()'>🔄 Reset to Default</button>";
+  html += "</div>";
+  
+  // Information
+  html += "<div class='section'>";
+  html += "<h3>ℹ️ How to Calibrate</h3>";
+  html += "<div class='info'>";
+  html += "1. Place robot on a flat surface with space to move<br>";
+  html += "2. Click 'Test Current Settings' to see robot movement<br>";
+  html += "3. If robot turns left: increase left motor or decrease right motor<br>";
+  html += "4. If robot turns right: increase right motor or decrease left motor<br>";
+  html += "5. Repeat until robot moves straight<br>";
+  html += "6. Valid offset range: -50 to +50";
+  html += "</div>";
+  html += "</div>";
+  
+  // Calculated Values
+  html += "<div class='section'>";
+  html += "<h3>⚙️ Actual Motor Speeds</h3>";
+  html += "<div class='info'>";
+  html += "At Move Speed " + String(moveSpeed) + ":<br>";
+  html += "Left Motor: " + String(getCalibratedLeftSpeed(moveSpeed)) + "/255<br>";
+  html += "Right Motor: " + String(getCalibratedRightSpeed(moveSpeed)) + "/255";
+  html += "</div>";
+  html += "</div>";
+  
+  html += "<script>";
+  html += "function sendCommand(cmd){";
+  html += "fetch('/?command='+cmd).then(()=>setTimeout(()=>location.reload(),500));";
+  html += "}";
+  html += "function confirmReset(){";
+  html += "if(confirm('Reset calibration to default values?')){";
+  html += "sendCommand('CAL_RESET');";
+  html += "}";
+  html += "}";
+  html += "</script>";
+  
+  html += "</body></html>";
+  return html;
 }
 
-// ส่ง response แบบสั้น
-void sendResponse(WiFiClient client, String message) {
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/plain");
-  client.println("Connection: close");
-  client.println();
-  client.println(message);
-}
+// ========== WEB SERVER HANDLING ==========
 
-// ========== WEB SERVER HANDLER ==========
-
-// จัดการ Web Server
 void handleWebServer() {
   WiFiClient client = server.available();
+  if (!client) return;
   
-  if (client) {
-    String request = "";
-    while (client.connected() && client.available()) {
-      String line = client.readStringUntil('\n');
-      if (line.length() == 1 && line[0] == '\n') break;
-      request += line;
+  String request = "";
+  while (client.connected() && client.available()) {
+    String line = client.readStringUntil('\r');
+    request += line;
+    if (line.length() == 1 && line[0] == '\n') break;
+  }
+  
+  // Extract the path from the request
+  String path = "";
+  int pathStart = request.indexOf(' ') + 1;
+  int pathEnd = request.indexOf(' ', pathStart);
+  if (pathStart > 0 && pathEnd > pathStart) {
+    path = request.substring(pathStart, pathEnd);
+  }
+  
+  // Route handling
+  if (path == "/" || path.startsWith("/?")) {
+    // Main page or main page with parameters
+    if (path.indexOf("command=") > 0) {
+      // Handle calibration commands from main page
+      String command = extractParameter(request, "command");
+      executeCommand(command);
+      sendResponse(client, "Command executed: " + command);
+    } else {
+      // Regular main page
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/html; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+      client.println(createMainHTML());
     }
-    
-    String html = "";
-    
-    // ตรวจสอบคำสั่ง
-    if (request.indexOf("GET /cmd?a=") >= 0) {
-      String cmd = extractParameter(request, "a");
-      if (cmd == "FORWARD") executeCommand("FORWARD");
-      else if (cmd == "BACKWARD") executeCommand("BACKWARD");
-      else if (cmd == "LEFT") executeCommand("LEFT");
-      else if (cmd == "RIGHT") executeCommand("RIGHT");
-      else if (cmd == "STOP") executeCommand("STOP");
-      else if (cmd == "TEST_TURN") executeCommand("TEST_TURN");
-      else if (cmd == "SQUARE") executeCommand("SQUARE");
-      else if (cmd == "CHECK_DISTANCE") executeCommand("CHECK_DISTANCE");
-      else if (cmd == "TOGGLE_OBSTACLE") executeCommand("TOGGLE_OBSTACLE");
-      // คำสั่งใหม่สำหรับกดค้าง
-      else if (cmd == "START_FORWARD") executeCommand("START_FORWARD");
-      else if (cmd == "START_BACKWARD") executeCommand("START_BACKWARD");
-      else if (cmd == "START_LEFT") executeCommand("START_LEFT");
-      else if (cmd == "START_RIGHT") executeCommand("START_RIGHT");
-      
-      sendResponse(client, "OK");
-      client.stop();
-      return;
-    }
-    else if (request.indexOf("GET /set?") >= 0) {
-      String ms = extractParameter(request, "ms");
-      String ts = extractParameter(request, "ts");
-      String mt = extractParameter(request, "mt");
-      String tt = extractParameter(request, "tt");
-      String od = extractParameter(request, "od");
-      
-      String changes = "";
-      if (ms.length() > 0) {
-        int oldSpeed = moveSpeed;
-        moveSpeed = ms.toInt();
-        changes += "Move Speed: " + String(oldSpeed) + "→" + String(moveSpeed) + " ";
-      }
-      if (ts.length() > 0) {
-        int oldSpeed = turnSpeed;
-        turnSpeed = ts.toInt();
-        changes += "Turn Speed: " + String(oldSpeed) + "→" + String(turnSpeed) + " ";
-      }
-      if (mt.length() > 0) {
-        int oldTime = moveDuration;
-        moveDuration = mt.toInt();
-        changes += "Move Time: " + String(oldTime) + "→" + String(moveDuration) + "ms ";
-      }
-      if (tt.length() > 0) {
-        int oldTime = turnDuration;
-        turnDuration = tt.toInt();
-        changes += "Turn Time: " + String(oldTime) + "→" + String(turnDuration) + "ms ";
-      }
-      if (od.length() > 0) {
-        int oldDistance = obstacleDistance;
-        obstacleDistance = od.toInt();
-        changes += "Obstacle Distance: " + String(oldDistance) + "→" + String(obstacleDistance) + "cm ";
-      }
-      
-      addLog("⚙️ Settings updated: " + changes);
-      sendResponse(client, "OK");
-      client.stop();
-      return;
-    }
-    else if (request.indexOf("GET /seq?") >= 0) {
+  }
+  else if (path == "/control") {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html; charset=UTF-8");
+    client.println("Connection: close");
+    client.println();
+    client.println(createControlHTML());
+  }
+  else if (path == "/seq" || path.startsWith("/seq?")) {
+    if (path.indexOf("?") > 0) {
+      // Handle sequence commands
       String action = extractParameter(request, "a");
-      
       if (action == "add") {
-        if (isExecutingSequence) {
-          addLog("⚠️ Cannot add commands while sequence is running!");
-        } else {
-          String c = extractParameter(request, "c");
-          String d = extractParameter(request, "d");
-          int duration = (d.length() > 0) ? d.toInt() : 1000;
-          int speed = (c == "FORWARD" || c == "BACKWARD") ? moveSpeed : turnSpeed;
-          addToSequence(c, speed, duration);
-        }
+        String command = extractParameter(request, "c");
+        int duration = extractParameter(request, "d").toInt();
+        if (duration == 0) duration = 1000;
+        addToSequence(command, moveSpeed, duration);
       }
       else if (action == "run") {
         executeSequence();
-      }
-      else if (action == "clear") {
-        if (isExecutingSequence) {
-          addLog("⚠️ Cannot clear sequence while it's running!");
-        } else {
-          clearSequence();
-        }
       }
       else if (action == "stop") {
         if (isExecutingSequence) {
@@ -970,33 +1072,102 @@ void handleWebServer() {
           addLog("⏹️ Sequence execution stopped by user");
         }
       }
-      
-      sendResponse(client, "OK");
-      client.stop();
-      return;
+      else if (action == "clear") {
+        clearSequence();
+      }
+      sendResponse(client, "Sequence action: " + action);
+    } else {
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/html; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+      client.println(createSequenceHTML());
     }
-    // Navigation
-    else if (request.indexOf("GET /control") >= 0) {
-      html = createControlHTML();
-    }
-    else if (request.indexOf("GET /seq") >= 0) {
-      html = createSequenceHTML();
-    }
-    else if (request.indexOf("GET /log") >= 0) {
-      html = createLogHTML();
-    }
-    else {
-      // หน้าหลัก
-      html = createMainHTML();
-    }
-    
-    // ส่ง HTML
+  }
+  else if (path == "/calibration") {
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: text/html; charset=UTF-8");
     client.println("Connection: close");
     client.println();
-    client.println(html);
-    
-    client.stop();
+    client.println(createCalibrationHTML());
   }
+  else if (path == "/log") {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html; charset=UTF-8");
+    client.println("Connection: close");
+    client.println();
+    client.println(createLogHTML());
+  }
+  else if (path.startsWith("/cmd?")) {
+    // Handle commands
+    String action = extractParameter(request, "a");
+    executeCommand(action);
+    sendResponse(client, "Command executed: " + action);
+  }
+  else if (path.startsWith("/set?")) {
+    // Handle settings
+    String msParam = extractParameter(request, "ms");
+    String tsParam = extractParameter(request, "ts");
+    String mtParam = extractParameter(request, "mt");
+    String ttParam = extractParameter(request, "tt");
+    String odParam = extractParameter(request, "od");
+    
+    if (msParam.length() > 0) {
+      moveSpeed = constrain(msParam.toInt(), 50, 255);
+      addLog("⚙️ Move speed set to " + String(moveSpeed));
+    }
+    if (tsParam.length() > 0) {
+      turnSpeed = constrain(tsParam.toInt(), 50, 255);
+      addLog("⚙️ Turn speed set to " + String(turnSpeed));
+    }
+    if (mtParam.length() > 0) {
+      moveDuration = constrain(mtParam.toInt(), 100, 5000);
+      addLog("⚙️ Move duration set to " + String(moveDuration) + "ms");
+    }
+    if (ttParam.length() > 0) {
+      turnDuration = constrain(ttParam.toInt(), 100, 3000);
+      addLog("⚙️ Turn duration set to " + String(turnDuration) + "ms");
+    }
+    if (odParam.length() > 0) {
+      obstacleDistance = constrain(odParam.toInt(), 5, 100);
+      addLog("📡 Obstacle distance set to " + String(obstacleDistance) + "cm");
+    }
+    
+    sendResponse(client, "Settings updated");
+  }
+  else {
+    // 404 Not Found
+    client.println("HTTP/1.1 404 Not Found");
+    client.println("Content-Type: text/html; charset=UTF-8");
+    client.println("Connection: close");
+    client.println();
+    client.println("<html><body><h1>404 - Page Not Found</h1></body></html>");
+  }
+  
+  client.stop();
+}
+
+String extractParameter(String request, String paramName) {
+  String searchStr = paramName + "=";
+  int startIndex = request.indexOf(searchStr);
+  if (startIndex == -1) return "";
+  
+  startIndex += searchStr.length();
+  int endIndex = request.indexOf('&', startIndex);
+  if (endIndex == -1) endIndex = request.indexOf(' ', startIndex);
+  if (endIndex == -1) endIndex = request.length();
+  
+  String value = request.substring(startIndex, endIndex);
+  // URL decode basic characters
+  value.replace("%20", " ");
+  value.replace("+", " ");
+  return value;
+}
+
+void sendResponse(WiFiClient client, String message) {
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=UTF-8");
+  client.println("Connection: close");
+  client.println();
+  client.println(message);
 }
