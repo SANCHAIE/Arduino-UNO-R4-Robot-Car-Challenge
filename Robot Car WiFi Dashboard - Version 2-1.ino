@@ -15,11 +15,19 @@ WiFiServer server(80);
 #define MOTOR_RIGHT_DIR1  4
 #define MOTOR_RIGHT_DIR2  5
 
+// Ultrasonic sensor pins
+#define ULTRASONIC_TRIG   6
+#define ULTRASONIC_ECHO   7
+
 // ตัวแปรการตั้งค่า
 int moveSpeed = 200;
 int turnSpeed = 150;
 int moveDuration = 1000;
 int turnDuration = 700;
+
+// ตัวแปร Ultrasonic
+int obstacleDistance = 20;  // ระยะหยุด (เซนติเมตร)
+bool obstacleDetectionEnabled = true;  // เปิด/ปิดการตรวจจับสิ่งกีดขวาง
 
 // ตัวแปร Sequence
 struct Command {
@@ -38,6 +46,7 @@ unsigned long sequenceStepStartTime = 0;
 String systemLog = "";
 int totalCommands = 0;
 unsigned long startTime = 0;
+bool continuousForwardActive = false;  // ตรวจสอบว่าเคลื่อนที่ไปข้างหน้าแบบต่อเนื่องหรือไม่
 
 // Function declarations
 String createMainHTML();
@@ -46,6 +55,7 @@ String createSequenceHTML();
 String createLogHTML();
 void handleWebServer();
 void handleSequenceExecution();
+void handleContinuousMovement();
 void startSequenceCommand(int stepIndex);
 String extractParameter(String request, String paramName);
 void sendResponse(WiFiClient client, String message);
@@ -60,6 +70,10 @@ void setup() {
   pinMode(MOTOR_LEFT_DIR2, OUTPUT);
   pinMode(MOTOR_RIGHT_DIR1, OUTPUT);
   pinMode(MOTOR_RIGHT_DIR2, OUTPUT);
+  
+  // ตั้งค่า Ultrasonic pins
+  pinMode(ULTRASONIC_TRIG, OUTPUT);
+  pinMode(ULTRASONIC_ECHO, INPUT);
   
   // หยุดมอเตอร์
   analogWrite(MOTOR_LEFT_PWM, 0);
@@ -88,10 +102,32 @@ void setup() {
 void loop() {
   handleWebServer();
   handleSequenceExecution();  // เพิ่มการจัดการ sequence แบบ non-blocking
+  handleContinuousMovement();  // ตรวจสอบการเคลื่อนที่แบบต่อเนื่อง
   delay(10);
 }
 
 // ========== MOTOR FUNCTIONS - NO DUPLICATES ==========
+
+// ฟังก์ชัน Ultrasonic Sensor
+float getDistance() {
+  digitalWrite(ULTRASONIC_TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(ULTRASONIC_TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(ULTRASONIC_TRIG, LOW);
+  
+  long duration = pulseIn(ULTRASONIC_ECHO, HIGH);
+  float distance = duration * 0.034 / 2;  // แปลงเป็นเซนติเมตร
+  
+  return distance;
+}
+
+bool isObstacleDetected() {
+  if (!obstacleDetectionEnabled) return false;
+  
+  float distance = getDistance();
+  return distance > 0 && distance < obstacleDistance;
+}
 
 // ฟังก์ชันหยุดมอเตอร์
 void stopMotors() {
@@ -142,14 +178,30 @@ void startTurnRight(int speed) {
 
 // ฟังก์ชันเคลื่อนที่แบบมีระยะเวลา (สำหรับ sequence และ test)
 void timedForward(int speed, int duration) {
+  unsigned long startTime = millis();
   startForward(speed);
-  delay(duration);
+  
+  while (millis() - startTime < duration) {
+    if (obstacleDetectionEnabled && isObstacleDetected()) {
+      stopMotors();
+      float distance = getDistance();
+      addLog("🚨 Obstacle detected! Distance: " + String(distance, 1) + "cm - Stopped");
+      return;
+    }
+    delay(50);  // ตรวจสอบทุก 50ms
+  }
+  
   stopMotors();
 }
 
 void timedBackward(int speed, int duration) {
+  unsigned long startTime = millis();
   startBackward(speed);
-  delay(duration);
+  
+  while (millis() - startTime < duration) {
+    delay(50);  // Backward ไม่ต้องตรวจสอบสิ่งกีดขวางด้านหน้า
+  }
+  
   stopMotors();
 }
 
@@ -196,20 +248,29 @@ void executeCommand(String command) {
   
   // คำสั่งแบบกดค้าง (เริ่มเคลื่อนที่)
   if (command == "START_FORWARD") {
-    addLog("⬆️ Start moving forward (continuous)");
-    startForward(moveSpeed);
+    if (obstacleDetectionEnabled && isObstacleDetected()) {
+      float distance = getDistance();
+      addLog("🚨 Cannot move forward! Obstacle at " + String(distance, 1) + "cm");
+    } else {
+      addLog("⬆️ Start moving forward (continuous)");
+      startForward(moveSpeed);
+      continuousForwardActive = true;
+    }
   }
   else if (command == "START_BACKWARD") {
     addLog("⬇️ Start moving backward (continuous)");
     startBackward(moveSpeed);
+    continuousForwardActive = false;
   }
   else if (command == "START_LEFT") {
     addLog("⬅️ Start turning left (continuous)");
     startTurnLeft(turnSpeed);
+    continuousForwardActive = false;
   }
   else if (command == "START_RIGHT") {
     addLog("➡️ Start turning right (continuous)");
     startTurnRight(turnSpeed);
+    continuousForwardActive = false;
   }
   // คำสั่งแบบเดิม (มีระยะเวลา)
   else if (command == "FORWARD") {
@@ -235,6 +296,7 @@ void executeCommand(String command) {
   else if (command == "STOP") {
     addLog("⏹️ Motors stopped");
     stopMotors();
+    continuousForwardActive = false;
   }
   else if (command == "TEST_TURN") {
     addLog("🧪 Starting 90° Test Turn");
@@ -254,6 +316,20 @@ void executeCommand(String command) {
       addLog("✅ Side " + String(i+1) + "/4 completed");
     }
     addLog("🎯 Square Pattern completed successfully!");
+  }
+  else if (command == "CHECK_DISTANCE") {
+    float distance = getDistance();
+    addLog("📏 Distance reading: " + String(distance, 1) + "cm");
+    if (distance > 0 && distance < obstacleDistance) {
+      addLog("⚠️ Obstacle detected within " + String(obstacleDistance) + "cm!");
+    } else {
+      addLog("✅ Path clear");
+    }
+  }
+  else if (command == "TOGGLE_OBSTACLE") {
+    obstacleDetectionEnabled = !obstacleDetectionEnabled;
+    String status = obstacleDetectionEnabled ? "ENABLED" : "DISABLED";
+    addLog("🔄 Obstacle detection " + status);
   }
 }
 
@@ -313,10 +389,29 @@ void startSequenceCommand(int stepIndex) {
   else if (commandSequence[stepIndex].action == "STOP") {
     stopMotors();
   }
+  else if (commandSequence[stepIndex].action == "CHECK_DISTANCE") {
+    float distance = getDistance();
+    addLog("📏 Distance: " + String(distance, 1) + "cm");
+    stopMotors();  // ไม่ต้องเคลื่อนที่
+  }
 }
 
 void handleSequenceExecution() {
   if (!isExecutingSequence) return;
+  
+  // ตรวจสอบสิ่งกีดขวางสำหรับการเคลื่อนที่ไปข้างหน้า
+  if (obstacleDetectionEnabled && 
+      currentSequenceStep < sequenceLength && 
+      commandSequence[currentSequenceStep].action == "FORWARD") {
+    
+    if (isObstacleDetected()) {
+      stopMotors();
+      float distance = getDistance();
+      addLog("🚨 Sequence stopped! Obstacle detected at " + String(distance, 1) + "cm");
+      isExecutingSequence = false;
+      return;
+    }
+  }
   
   // ตรวจสอบว่าคำสั่งปัจจุบันเสร็จสิ้นแล้วหรือไม่
   if (millis() - sequenceStepStartTime >= commandSequence[currentSequenceStep].duration) {
@@ -337,6 +432,18 @@ void handleSequenceExecution() {
       isExecutingSequence = false;
       addLog("🎯 Sequence execution completed successfully!");
       addLog("📊 Total " + String(sequenceLength) + " commands executed");
+    }
+  }
+}
+
+void handleContinuousMovement() {
+  // ตรวจสอบสิ่งกีดขวางขณะเคลื่อนที่ไปข้างหน้าแบบต่อเนื่อง
+  if (continuousForwardActive && obstacleDetectionEnabled) {
+    if (isObstacleDetected()) {
+      stopMotors();
+      float distance = getDistance();
+      addLog("🚨 Continuous movement stopped! Obstacle at " + String(distance, 1) + "cm");
+      continuousForwardActive = false;
     }
   }
 }
@@ -401,6 +508,24 @@ String createMainHTML() {
   html += "<button onclick='saveSettings()'>💾 Save Settings</button>";
   html += "</div>";
   
+  // Ultrasonic Settings
+  html += "<div class='section'>";
+  html += "<h3>📡 Ultrasonic Settings</h3>";
+  html += "<div class='setting-row'>";
+  html += "<span class='setting-label'>Stop Distance:</span>";
+  html += "<input type='number' id='od' value='" + String(obstacleDistance) + "' min='5' max='100'><span>cm</span>";
+  html += "<span class='setting-label'>Detection:</span>";
+  html += "<span style='color:" + String(obstacleDetectionEnabled ? "#4CAF50" : "#e74c3c") + "'>";
+  html += obstacleDetectionEnabled ? "✅ ENABLED" : "❌ DISABLED";
+  html += "</span>";
+  html += "</div>";
+  html += "<div class='setting-row'>";
+  html += "<button onclick='checkDistance()'>📏 Check Distance</button>";
+  html += "<button onclick='toggleObstacle()'>🔄 Toggle Detection</button>";
+  html += "</div>";
+  html += "<button onclick='saveUltrasonicSettings()'>💾 Save Distance</button>";
+  html += "</div>";
+  
   // Status
   html += "<div class='section'>";
   html += "<h3>📊 System Status</h3>";
@@ -409,6 +534,18 @@ String createMainHTML() {
   html += "<div><strong>Uptime:</strong> " + String((millis()-startTime)/1000) + "s</div>";
   html += "<div><strong>Sequence:</strong> " + String(sequenceLength) + " commands</div>";
   html += "<div><strong>IP:</strong> " + WiFi.localIP().toString() + "</div>";
+  html += "<div><strong>Distance:</strong> " + String(getDistance(), 1) + "cm</div>";
+  html += "<div><strong>Obstacle:</strong> ";
+  if (obstacleDetectionEnabled) {
+    if (isObstacleDetected()) {
+      html += "<span style='color:#e74c3c'>🚨 DETECTED</span>";
+    } else {
+      html += "<span style='color:#4CAF50'>✅ CLEAR</span>";
+    }
+  } else {
+    html += "<span style='color:#f39c12'>⚠️ DISABLED</span>";
+  }
+  html += "</div>";
   html += "</div>";
   html += "</div>";
   
@@ -416,6 +553,18 @@ String createMainHTML() {
   html += "function saveSettings(){";
   html += "fetch('/set?ms='+document.getElementById('ms').value+'&ts='+document.getElementById('ts').value+'&mt='+document.getElementById('mt').value+'&tt='+document.getElementById('tt').value);";
   html += "setTimeout(()=>location.reload(),300);";
+  html += "}";
+  html += "function saveUltrasonicSettings(){";
+  html += "fetch('/set?od='+document.getElementById('od').value);";
+  html += "setTimeout(()=>location.reload(),300);";
+  html += "}";
+  html += "function checkDistance(){";
+  html += "fetch('/cmd?a=CHECK_DISTANCE');";
+  html += "setTimeout(()=>location.reload(),1000);";
+  html += "}";
+  html += "function toggleObstacle(){";
+  html += "fetch('/cmd?a=TOGGLE_OBSTACLE');";
+  html += "setTimeout(()=>location.reload(),500);";
   html += "}";
   html += "</script>";
   
@@ -481,6 +630,8 @@ String createControlHTML() {
   html += "<div class='extra'>";
   html += "<button onclick='cmd(\"TEST_TURN\")'>🧪 Test Turn</button>";
   html += "<button onclick='cmd(\"SQUARE\")'>🔄 Square</button>";
+  html += "<button onclick='cmd(\"CHECK_DISTANCE\")'>📏 Distance</button>";
+  html += "<button onclick='cmd(\"TOGGLE_OBSTACLE\")'>🔄 Toggle Sensor</button>";
   html += "</div>";
   
   html += "<script>";
@@ -564,6 +715,7 @@ String createSequenceHTML() {
   html += "<option value='LEFT'>⬅️ Left</option>";
   html += "<option value='RIGHT'>➡️ Right</option>";
   html += "<option value='STOP'>⏹️ Stop</option>";
+  html += "<option value='CHECK_DISTANCE'>📏 Check Distance</option>";
   html += "</select>";
   html += "<input type='number' id='dur' placeholder='Duration (ms)' min='100' max='5000' value='1000'>";
   html += "<button onclick='addCmd()'>➕ Add</button>";
@@ -588,6 +740,7 @@ String createSequenceHTML() {
       else if (commandSequence[i].action == "LEFT") emoji = "⬅️";
       else if (commandSequence[i].action == "RIGHT") emoji = "➡️";
       else if (commandSequence[i].action == "STOP") emoji = "⏹️";
+      else if (commandSequence[i].action == "CHECK_DISTANCE") emoji = "📏";
       
       html += "<div class='seq-item'";
       if (isExecutingSequence && i == currentSequenceStep) {
@@ -735,6 +888,8 @@ void handleWebServer() {
       else if (cmd == "STOP") executeCommand("STOP");
       else if (cmd == "TEST_TURN") executeCommand("TEST_TURN");
       else if (cmd == "SQUARE") executeCommand("SQUARE");
+      else if (cmd == "CHECK_DISTANCE") executeCommand("CHECK_DISTANCE");
+      else if (cmd == "TOGGLE_OBSTACLE") executeCommand("TOGGLE_OBSTACLE");
       // คำสั่งใหม่สำหรับกดค้าง
       else if (cmd == "START_FORWARD") executeCommand("START_FORWARD");
       else if (cmd == "START_BACKWARD") executeCommand("START_BACKWARD");
@@ -750,6 +905,7 @@ void handleWebServer() {
       String ts = extractParameter(request, "ts");
       String mt = extractParameter(request, "mt");
       String tt = extractParameter(request, "tt");
+      String od = extractParameter(request, "od");
       
       String changes = "";
       if (ms.length() > 0) {
@@ -771,6 +927,11 @@ void handleWebServer() {
         int oldTime = turnDuration;
         turnDuration = tt.toInt();
         changes += "Turn Time: " + String(oldTime) + "→" + String(turnDuration) + "ms ";
+      }
+      if (od.length() > 0) {
+        int oldDistance = obstacleDistance;
+        obstacleDistance = od.toInt();
+        changes += "Obstacle Distance: " + String(oldDistance) + "→" + String(obstacleDistance) + "cm ";
       }
       
       addLog("⚙️ Settings updated: " + changes);
