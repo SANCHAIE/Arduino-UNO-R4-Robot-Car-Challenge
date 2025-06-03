@@ -31,6 +31,8 @@ struct Command {
 Command commandSequence[20];
 int sequenceLength = 0;
 bool isExecutingSequence = false;
+int currentSequenceStep = 0;
+unsigned long sequenceStepStartTime = 0;
 
 // ตัวแปรสถานะ
 String systemLog = "";
@@ -43,6 +45,8 @@ String createControlHTML();
 String createSequenceHTML();
 String createLogHTML();
 void handleWebServer();
+void handleSequenceExecution();
+void startSequenceCommand(int stepIndex);
 String extractParameter(String request, String paramName);
 void sendResponse(WiFiClient client, String message);
 
@@ -83,6 +87,7 @@ void setup() {
 
 void loop() {
   handleWebServer();
+  handleSequenceExecution();  // เพิ่มการจัดการ sequence แบบ non-blocking
   delay(10);
 }
 
@@ -273,38 +278,67 @@ void executeSequence() {
     return;
   }
   
-  addLog("🚀 Starting sequence execution (" + String(sequenceLength) + " commands)");
-  addLog("⏳ Sequence in progress...");
-  isExecutingSequence = true;
-  
-  for (int i = 0; i < sequenceLength; i++) {
-    addLog("📍 Step " + String(i+1) + "/" + String(sequenceLength) + ": " + commandSequence[i].action);
-    
-    // รันคำสั่งโดยไม่ผ่าน executeCommand เพื่อไม่ให้ log ซ้ำ
-    if (commandSequence[i].action == "FORWARD") {
-      timedForward(commandSequence[i].speed, commandSequence[i].duration);
-    }
-    else if (commandSequence[i].action == "BACKWARD") {
-      timedBackward(commandSequence[i].speed, commandSequence[i].duration);
-    }
-    else if (commandSequence[i].action == "LEFT") {
-      timedTurnLeft(commandSequence[i].speed, commandSequence[i].duration);
-    }
-    else if (commandSequence[i].action == "RIGHT") {
-      timedTurnRight(commandSequence[i].speed, commandSequence[i].duration);
-    }
-    else if (commandSequence[i].action == "STOP") {
-      stopMotors();
-      delay(commandSequence[i].duration);
-    }
-    
-    addLog("✅ Step " + String(i+1) + " completed");
-    delay(200);
+  if (isExecutingSequence) {
+    addLog("⚠️ Sequence is already running!");
+    return;
   }
   
-  isExecutingSequence = false;
-  addLog("🎯 Sequence execution completed successfully!");
-  addLog("📊 Total " + String(sequenceLength) + " commands executed");
+  addLog("🚀 Starting sequence execution (" + String(sequenceLength) + " commands)");
+  isExecutingSequence = true;
+  currentSequenceStep = 0;
+  sequenceStepStartTime = millis();
+  
+  // เริ่มคำสั่งแรก
+  startSequenceCommand(currentSequenceStep);
+}
+
+void startSequenceCommand(int stepIndex) {
+  if (stepIndex >= sequenceLength) return;
+  
+  addLog("📍 Step " + String(stepIndex + 1) + "/" + String(sequenceLength) + ": " + commandSequence[stepIndex].action);
+  
+  // เริ่มคำสั่งโดยไม่ใช้ delay
+  if (commandSequence[stepIndex].action == "FORWARD") {
+    startForward(commandSequence[stepIndex].speed);
+  }
+  else if (commandSequence[stepIndex].action == "BACKWARD") {
+    startBackward(commandSequence[stepIndex].speed);
+  }
+  else if (commandSequence[stepIndex].action == "LEFT") {
+    startTurnLeft(commandSequence[stepIndex].speed);
+  }
+  else if (commandSequence[stepIndex].action == "RIGHT") {
+    startTurnRight(commandSequence[stepIndex].speed);
+  }
+  else if (commandSequence[stepIndex].action == "STOP") {
+    stopMotors();
+  }
+}
+
+void handleSequenceExecution() {
+  if (!isExecutingSequence) return;
+  
+  // ตรวจสอบว่าคำสั่งปัจจุบันเสร็จสิ้นแล้วหรือไม่
+  if (millis() - sequenceStepStartTime >= commandSequence[currentSequenceStep].duration) {
+    // หยุดมอเตอร์และเพิ่ม log
+    stopMotors();
+    addLog("✅ Step " + String(currentSequenceStep + 1) + " completed");
+    
+    // ไปคำสั่งถัดไป
+    currentSequenceStep++;
+    
+    if (currentSequenceStep < sequenceLength) {
+      // รอสักครู่ก่อนคำสั่งถัดไป
+      delay(200);
+      sequenceStepStartTime = millis();
+      startSequenceCommand(currentSequenceStep);
+    } else {
+      // sequence เสร็จสิ้น
+      isExecutingSequence = false;
+      addLog("🎯 Sequence execution completed successfully!");
+      addLog("📊 Total " + String(sequenceLength) + " commands executed");
+    }
+  }
 }
 
 void clearSequence() {
@@ -538,7 +572,11 @@ String createSequenceHTML() {
   
   // Sequence List
   html += "<div class='section'>";
-  html += "<h3>📋 Command List (" + String(sequenceLength) + " commands)</h3>";
+  html += "<h3>📋 Command List (" + String(sequenceLength) + " commands)";
+  if (isExecutingSequence) {
+    html += " - <span style='color:#e74c3c'>🔄 RUNNING (Step " + String(currentSequenceStep + 1) + "/" + String(sequenceLength) + ")</span>";
+  }
+  html += "</h3>";
   html += "<div class='seq-list'>";
   if (sequenceLength == 0) {
     html += "<div style='text-align:center;opacity:0.7;padding:15px'>No commands added yet</div>";
@@ -551,7 +589,11 @@ String createSequenceHTML() {
       else if (commandSequence[i].action == "RIGHT") emoji = "➡️";
       else if (commandSequence[i].action == "STOP") emoji = "⏹️";
       
-      html += "<div class='seq-item'>";
+      html += "<div class='seq-item'";
+      if (isExecutingSequence && i == currentSequenceStep) {
+        html += " style='background:#e74c3c;border:1px solid #fff'";
+      }
+      html += ">";
       html += "<span>" + String(i+1) + ". " + emoji + " " + commandSequence[i].action + "</span>";
       html += "<span>" + String(commandSequence[i].duration) + "ms</span>";
       html += "</div>";
@@ -562,6 +604,9 @@ String createSequenceHTML() {
   // Control Buttons
   html += "<div class='btn-group'>";
   html += "<button class='run-btn' onclick='runSeq()'>🚀 Run Sequence</button>";
+  if (isExecutingSequence) {
+    html += "<button style='background:#e74c3c' onclick='stopSeq()'>⏹️ Stop Sequence</button>";
+  }
   html += "<button class='clear-btn' onclick='clearSeq()'>🧹 Clear All</button>";
   html += "</div>";
   html += "</div>";
@@ -574,6 +619,7 @@ String createSequenceHTML() {
   html += "setTimeout(()=>location.reload(),200);";
   html += "}";
   html += "function runSeq(){fetch('/seq?a=run');setTimeout(()=>location.reload(),500);}";
+  html += "function stopSeq(){fetch('/seq?a=stop');setTimeout(()=>location.reload(),200);}";
   html += "function clearSeq(){fetch('/seq?a=clear');setTimeout(()=>location.reload(),200);}";
   html += "</script>";
   
@@ -736,17 +782,32 @@ void handleWebServer() {
       String action = extractParameter(request, "a");
       
       if (action == "add") {
-        String c = extractParameter(request, "c");
-        String d = extractParameter(request, "d");
-        int duration = (d.length() > 0) ? d.toInt() : 1000;
-        int speed = (c == "FORWARD" || c == "BACKWARD") ? moveSpeed : turnSpeed;
-        addToSequence(c, speed, duration);
+        if (isExecutingSequence) {
+          addLog("⚠️ Cannot add commands while sequence is running!");
+        } else {
+          String c = extractParameter(request, "c");
+          String d = extractParameter(request, "d");
+          int duration = (d.length() > 0) ? d.toInt() : 1000;
+          int speed = (c == "FORWARD" || c == "BACKWARD") ? moveSpeed : turnSpeed;
+          addToSequence(c, speed, duration);
+        }
       }
       else if (action == "run") {
         executeSequence();
       }
       else if (action == "clear") {
-        clearSequence();
+        if (isExecutingSequence) {
+          addLog("⚠️ Cannot clear sequence while it's running!");
+        } else {
+          clearSequence();
+        }
+      }
+      else if (action == "stop") {
+        if (isExecutingSequence) {
+          isExecutingSequence = false;
+          stopMotors();
+          addLog("⏹️ Sequence execution stopped by user");
+        }
       }
       
       sendResponse(client, "OK");
