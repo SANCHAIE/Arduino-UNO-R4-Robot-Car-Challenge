@@ -1,10 +1,22 @@
-// โค้ด Robot Car WiFi Dashboard - Version 2.1 (4-Pin Motor Driver)
+// โค้ด Robot Car WiFi Dashboard - Version 2.1 (4-Pin Motor Driver) - WiFi Optimized
 // สำหรับ Motor Driver 4 pins ที่มี PWM built-in
 #include <WiFiS3.h>
 
-// WiFi credentials
-const char* ssid = "YOUR_WIFI_NAME";
-const char* password = "YOUR_PASSWORD";
+// WiFi credentials - ปรับสำหรับหลายเครือข่าย
+struct WiFiCredentials {
+  const char* ssid;
+  const char* password;
+};
+
+// รายการ WiFi ที่ต้องการเชื่อมต่อ (เรียงตามลำดับความสำคัญ)
+WiFiCredentials wifiNetworks[] = {
+  {"Your_iPhone_Hotspot", "your_password"},      // iPhone Hotspot
+  {"Your_Router_2.4GHz", "your_password"},       // Router 2.4GHz
+  {"Your_Router_5GHz", "your_password"},         // Router 5GHz (ถ้ามี)
+  {"Guest_Network", "guest_password"}            // Guest Network
+};
+
+const int numNetworks = sizeof(wifiNetworks) / sizeof(wifiNetworks[0]);
 
 WiFiServer server(80);
 
@@ -46,14 +58,189 @@ bool isExecutingSequence = false;
 int currentSequenceStep = 0;
 unsigned long sequenceStepStartTime = 0;
 
-// ตัวแปรสถานะ
+// ตัวแปรสถานะ WiFi และระบบ
 String systemLog = "";
 unsigned long startTime = 0;
 bool continuousForwardActive = false;
 String lastActivity = "";
+String connectedSSID = "";
+bool isAPMode = false;
+int connectionAttempts = 0;
+
+// ฟังก์ชันสแกนหา WiFi networks ที่มีอยู่
+void scanAndConnectWiFi() {
+  Serial.println("🔍 Scanning for available WiFi networks...");
+  
+  // สแกนเครือข่าย WiFi
+  int numSsid = WiFi.scanNetworks();
+  
+  if (numSsid == -1) {
+    Serial.println("❌ WiFi scan failed");
+    return;
+  }
+  
+  Serial.println("📡 Found " + String(numSsid) + " networks:");
+  
+  // แสดงรายการเครือข่ายที่พบ
+  for (int thisNet = 0; thisNet < numSsid; thisNet++) {
+    String ssid = WiFi.SSID(thisNet);
+    int rssi = WiFi.RSSI(thisNet);
+    String encryption = WiFi.encryptionType(thisNet) == WIFI_AUTH_OPEN ? "Open" : "Encrypted";
+    
+    Serial.println("  " + String(thisNet + 1) + ". " + ssid + 
+                   " (Signal: " + String(rssi) + "dBm, " + encryption + ")");
+  }
+  
+  Serial.println();
+  
+  // ลองเชื่อมต่อกับเครือข่ายที่กำหนดไว้
+  for (int i = 0; i < numNetworks; i++) {
+    String targetSSID = String(wifiNetworks[i].ssid);
+    
+    // ตรวจสอบว่าเครือข่ายนี้มีอยู่หรือไม่
+    bool networkFound = false;
+    int signalStrength = -100;
+    
+    for (int thisNet = 0; thisNet < numSsid; thisNet++) {
+      if (WiFi.SSID(thisNet) == targetSSID) {
+        networkFound = true;
+        signalStrength = WiFi.RSSI(thisNet);
+        break;
+      }
+    }
+    
+    if (networkFound) {
+      Serial.println("🎯 Attempting to connect to: " + targetSSID + 
+                     " (Signal: " + String(signalStrength) + "dBm)");
+      
+      if (connectToWiFi(wifiNetworks[i].ssid, wifiNetworks[i].password)) {
+        connectedSSID = targetSSID;
+        return; // เชื่อมต่อสำเร็จ
+      }
+    }
+  }
+  
+  Serial.println("❌ Could not connect to any configured network");
+}
+
+// ฟังก์ชันเชื่อมต่อ WiFi แบบปรับปรุง
+bool connectToWiFi(const char* ssid, const char* password) {
+  Serial.println("🔌 Connecting to: " + String(ssid));
+  
+  // ตั้งค่า WiFi แบบละเอียด
+  WiFi.disconnect();
+  delay(1000);
+  
+  // กำหนดค่า WiFi config
+  WiFi.config(IPAddress(0, 0, 0, 0)); // ใช้ DHCP
+  
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  const int maxAttempts = 20; // ลดจาก 30 เป็น 20
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+    
+    // ตรวจสอบสถานะการเชื่อมต่อ
+    if (attempts % 5 == 0) {
+      wl_status_t status = WiFi.status();
+      Serial.println();
+      Serial.print("📊 Connection status: ");
+      
+      switch (status) {
+        case WL_IDLE_STATUS:
+          Serial.println("IDLE");
+          break;
+        case WL_NO_SSID_AVAIL:
+          Serial.println("SSID NOT FOUND");
+          return false; // หยุดทันทีถ้าไม่เจอ SSID
+        case WL_CONNECT_FAILED:
+          Serial.println("CONNECTION FAILED");
+          return false; // หยุดทันทีถ้าเชื่อมต่อล้มเหลว
+        case WL_CONNECTION_LOST:
+          Serial.println("CONNECTION LOST");
+          break;
+        case WL_DISCONNECTED:
+          Serial.println("DISCONNECTED");
+          break;
+        default:
+          Serial.println("UNKNOWN (" + String(status) + ")");
+      }
+      
+      Serial.print("🔄 Attempt " + String(attempts/5) + "/" + String(maxAttempts/5) + 
+                   " for " + String(ssid) + "...");
+    }
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.println("✅ WiFi connected successfully!");
+    Serial.println("📱 SSID: " + String(ssid));
+    Serial.println("🌐 IP address: " + WiFi.localIP().toString());
+    Serial.println("📡 Signal strength: " + String(WiFi.RSSI()) + " dBm");
+    Serial.println("🔒 Encryption: " + getEncryptionType());
+    
+    connectionAttempts = 0;
+    return true;
+  } else {
+    Serial.println();
+    Serial.println("❌ Failed to connect to " + String(ssid));
+    connectionAttempts++;
+    return false;
+  }
+}
+
+// ฟังก์ชันตรวจสอบประเภทการเข้ารหัส
+String getEncryptionType() {
+  switch (WiFi.encryptionType()) {
+    case WIFI_AUTH_OPEN: return "Open";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA PSK";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2 PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2 PSK";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2 Enterprise";
+    default: return "Unknown";
+  }
+}
+
+// ฟังก์ชันสร้าง Access Point mode
+void createAccessPoint() {
+  Serial.println("🏠 Creating Access Point mode...");
+  WiFi.disconnect();
+  delay(1000);
+  
+  // สร้างชื่อ AP ที่ไม่ซ้ำ
+  String apName = "RobotCar_4PWM_" + String(random(1000, 9999));
+  String apPassword = "RobotCar123";
+  
+  if (WiFi.beginAP(apName.c_str(), apPassword.c_str())) {
+    isAPMode = true;
+    Serial.println("✅ Access Point created successfully!");
+    Serial.println("📱 AP Name: " + apName);
+    Serial.println("🔐 Password: " + apPassword);
+    Serial.println("🌐 AP IP: " + WiFi.localIP().toString());
+    Serial.println();
+    Serial.println("📋 How to connect:");
+    Serial.println("1. Connect your phone/computer to WiFi: " + apName);
+    Serial.println("2. Use password: " + apPassword);
+    Serial.println("3. Open browser and go to: " + WiFi.localIP().toString());
+    
+    connectedSSID = apName + " (AP Mode)";
+  } else {
+    Serial.println("❌ Failed to create Access Point!");
+  }
+}
 
 void setup() {
   Serial.begin(115200);
+  delay(2000); // รอให้ Serial Monitor พร้อม
+  
+  Serial.println("🤖 Arduino UNO R4 WiFi Robot Car Starting...");
+  Serial.println("🔧 4-Pin Motor Driver with Built-in PWM");
+  Serial.println();
   
   // ตั้งค่า pins สำหรับ 4-Pin Motor Driver
   pinMode(MOTOR_LEFT_FORWARD, OUTPUT);
@@ -70,24 +257,66 @@ void setup() {
   
   startTime = millis();
   
-  // เชื่อมต่อ WiFi
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(ssid, password);
+  // เพิ่ม randomness สำหรับ AP name
+  randomSeed(analogRead(0));
   
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.print(".");
+  // ลองเชื่อมต่อ WiFi แบบอัจฉริยะ
+  Serial.println("🔍 Starting intelligent WiFi connection...");
+  scanAndConnectWiFi();
+  
+  // ถ้าเชื่อมต่อไม่ได้ ให้สร้าง Access Point
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("🔄 WiFi connection failed, switching to Access Point mode...");
+    createAccessPoint();
   }
   
-  Serial.println();
-  Serial.println("WiFi connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
+  // เริ่มต้น web server
   server.begin();
-  addLog("🚀 System started - IP: " + WiFi.localIP().toString());
+  
+  // Log การเริ่มต้นระบบ
+  addLog("🚀 System started - " + (isAPMode ? "AP Mode" : "WiFi Mode"));
+  addLog("🌐 Network: " + connectedSSID);
+  addLog("📍 IP: " + WiFi.localIP().toString());
   addLog("🔧 Motor Driver: 4-Pin with Built-in PWM");
-  addLog("📡 WiFi Dashboard ready");
+  addLog("📡 Web Dashboard ready");
+  
+  Serial.println();
+  Serial.println("=== Robot Car WiFi Dashboard Ready ===");
+  Serial.println("🌐 Access URL: http://" + WiFi.localIP().toString());
+  Serial.println("==========================================");
+}
+
+// ฟังก์ชันตรวจสอบและเชื่อมต่อ WiFi ใหม่
+void checkAndReconnectWiFi() {
+  static unsigned long lastWiFiCheck = 0;
+  static int reconnectAttempts = 0;
+  
+  if (millis() - lastWiFiCheck > 10000) { // ตรวจสอบทุก 10 วินาที
+    lastWiFiCheck = millis();
+    
+    if (!isAPMode && WiFi.status() != WL_CONNECTED) {
+      reconnectAttempts++;
+      addLog("⚠️ WiFi disconnected! Attempt " + String(reconnectAttempts) + " to reconnect...");
+      
+      // ถ้าเชื่อมต่อไม่ได้หลายครั้ง ให้เปลี่ยนเป็น AP mode
+      if (reconnectAttempts >= 3) {
+        addLog("🔄 Multiple reconnection failures, switching to AP mode...");
+        createAccessPoint();
+        reconnectAttempts = 0;
+        return;
+      }
+      
+      // ลองเชื่อมต่อ WiFi ใหม่
+      scanAndConnectWiFi();
+      
+      if (WiFi.status() == WL_CONNECTED) {
+        addLog("✅ WiFi reconnected! IP: " + WiFi.localIP().toString());
+        reconnectAttempts = 0;
+      }
+    } else if (WiFi.status() == WL_CONNECTED) {
+      reconnectAttempts = 0; // รีเซ็ตการนับถ้าเชื่อมต่อปกติ
+    }
+  }
 }
 
 // ฟังก์ชันคำนวณความเร็วที่ปรับเทียบแล้ว
@@ -198,19 +427,45 @@ int getDistance() {
 
 // ฟังก์ชันเพิ่ม Log
 void addLog(String message) {
-  unsigned long currentTime = millis() - startTime;
-  String timeStr = String(currentTime / 1000) + "." + String((currentTime % 1000) / 100) + "s";
-  String logEntry = "[" + timeStr + "] " + message + "\n";
+  String timestamp = String((millis() - startTime) / 1000.0, 1) + "s";
+  String logEntry = "[" + timestamp + "] " + message;
   
-  systemLog += logEntry;
-  Serial.print(logEntry);
+  // เก็บ log ใน string
+  systemLog += logEntry + "<br>";
   
-  // เก็บ log สูงสุด 2000 ตัวอักษร
-  if (systemLog.length() > 2000) {
-    systemLog = systemLog.substring(systemLog.length() - 1500);
+  // เก็บแค่ 20 บรรทัดล่าสุด
+  int lineCount = 0;
+  for (int i = 0; i < systemLog.length(); i++) {
+    if (systemLog.substring(i, i+4) == "<br>") lineCount++;
   }
   
-  lastActivity = message;
+  while (lineCount > 20) {
+    int firstBr = systemLog.indexOf("<br>");
+    if (firstBr >= 0) {
+      systemLog = systemLog.substring(firstBr + 4);
+      lineCount--;
+    } else {
+      break;
+    }
+  }
+  
+  // ส่งไป Serial Monitor ด้วย (สำหรับ debugging)
+  Serial.println(logEntry);
+}
+
+// ฟังก์ชันแสดงสถานะ Sequence สำหรับ debugging
+void debugSequenceStatus() {
+  addLog("🔍 DEBUG: Sequence Status");
+  addLog("  - isExecutingSequence: " + String(isExecutingSequence ? "true" : "false"));
+  addLog("  - sequenceLength: " + String(sequenceLength));
+  addLog("  - currentSequenceStep: " + String(currentSequenceStep));
+  addLog("  - stepStartTime: " + String(sequenceStepStartTime));
+  addLog("  - currentTime: " + String(millis()));
+  if (sequenceLength > 0 && currentSequenceStep < sequenceLength) {
+    addLog("  - currentCommand: " + commandSequence[currentSequenceStep].action);
+    addLog("  - currentDuration: " + String(commandSequence[currentSequenceStep].duration));
+    addLog("  - timeElapsed: " + String(millis() - sequenceStepStartTime));
+  }
 }
 
 // ฟังก์ชันรันคำสั่ง
@@ -255,10 +510,10 @@ void executeCommand(String command) {
     for (int i = 0; i < 4; i++) {
       addLog("📐 Side " + String(i+1) + "/4 - Moving forward");
       timedForward(moveSpeed, moveDuration);
-      delay(200);
+      delay(100); // Reduced delay for faster execution
       addLog("🔄 Turn " + String(i+1) + "/4 - Turning right");
       timedTurnRight(turnSpeed, turnDuration);
-      delay(200);
+      delay(100); // Reduced delay for faster execution
     }
     addLog("✅ Square pattern completed");
   }
@@ -270,6 +525,26 @@ void executeCommand(String command) {
     }
     startForward(moveSpeed);
     continuousForwardActive = true;
+  }
+  else if (command == "EXECUTE_SEQUENCE") {
+    executeSequence();
+  }
+  else if (command == "STOP_SEQUENCE") {
+    stopSequence();
+  }
+  else if (command == "CLEAR_SEQUENCE") {
+    clearSequence();
+  }
+  else if (command == "DEBUG_SEQUENCE") {
+    debugSequenceStatus();
+  }
+  else if (command == "CHECK_DISTANCE") {
+    float distance = getDistance();
+    addLog("📏 Distance measurement: " + String(distance, 1) + "cm");
+  }
+  else if (command == "TOGGLE_OBSTACLE") {
+    obstacleDetectionEnabled = !obstacleDetectionEnabled;
+    addLog("📡 Obstacle detection: " + String(obstacleDetectionEnabled ? "ENABLED" : "DISABLED"));
   }
   else if (command == "TOGGLE_OBSTACLE") {
     obstacleDetectionEnabled = !obstacleDetectionEnabled;
@@ -313,47 +588,84 @@ void executeCommand(String command) {
 
 // ฟังก์ชันเริ่มต้นคำสั่งใน Sequence
 void startSequenceCommand(int stepIndex) {
-  if (stepIndex >= sequenceLength) return;
+  if (stepIndex >= sequenceLength) {
+    isExecutingSequence = false;
+    currentSequenceStep = 0;
+    addLog("⚠️ Invalid sequence step - stopping execution");
+    return;
+  }
   
-  addLog("📍 Step " + String(stepIndex + 1) + "/" + String(sequenceLength) + ": " + commandSequence[stepIndex].action);
+  String action = commandSequence[stepIndex].action;
+  int speed = commandSequence[stepIndex].speed;
+  int duration = commandSequence[stepIndex].duration;
+  
+  addLog("📍 Step " + String(stepIndex + 1) + "/" + String(sequenceLength) + ": " + action + 
+         " (Speed: " + String(speed) + ", Duration: " + String(duration) + "ms)");
   
   // เริ่มคำสั่งโดยไม่ใช้ delay
-  if (commandSequence[stepIndex].action == "FORWARD") {
-    startForward(commandSequence[stepIndex].speed);
+  if (action == "FORWARD") {
+    if (obstacleDetectionEnabled && getDistance() <= obstacleDistance) {
+      addLog("🚨 Obstacle detected! Skipping FORWARD command");
+      stopMotors();
+    } else {
+      startForward(speed);
+    }
   }
-  else if (commandSequence[stepIndex].action == "BACKWARD") {
-    startBackward(commandSequence[stepIndex].speed);
+  else if (action == "BACKWARD") {
+    startBackward(speed);
   }
-  else if (commandSequence[stepIndex].action == "LEFT") {
-    startTurnLeft(commandSequence[stepIndex].speed);
+  else if (action == "LEFT") {
+    startTurnLeft(speed);
   }
-  else if (commandSequence[stepIndex].action == "RIGHT") {
-    startTurnRight(commandSequence[stepIndex].speed);
+  else if (action == "RIGHT") {
+    startTurnRight(speed);
   }
-  else if (commandSequence[stepIndex].action == "STOP") {
+  else if (action == "STOP") {
+    stopMotors();
+  }
+  else {
+    addLog("❌ Unknown command: " + action);
     stopMotors();
   }
   
   sequenceStepStartTime = millis();
+  lastActivity = action;
 }
 
 // ฟังก์ชันตรวจสอบและดำเนินการ Sequence
 void processSequence() {
   if (!isExecutingSequence) return;
   
+  // ตรวจสอบสิ่งกีดขวางสำหรับการเคลื่อนที่ไปข้างหน้า
+  if (obstacleDetectionEnabled && 
+      currentSequenceStep < sequenceLength && 
+      commandSequence[currentSequenceStep].action == "FORWARD") {
+    
+    if (getDistance() <= obstacleDistance) {
+      stopMotors();
+      float distance = getDistance();
+      addLog("🚨 Sequence stopped! Obstacle detected at " + String(distance, 1) + "cm");
+      isExecutingSequence = false;
+      currentSequenceStep = 0;
+      return;
+    }
+  }
+  
   // ตรวจสอบว่าขั้นตอนปัจจุบันเสร็จสิ้นหรือยัง
   if (millis() - sequenceStepStartTime >= commandSequence[currentSequenceStep].duration) {
     stopMotors();
+    addLog("✅ Step " + String(currentSequenceStep + 1) + "/" + String(sequenceLength) + " completed");
+    
     currentSequenceStep++;
     
     if (currentSequenceStep >= sequenceLength) {
       // จบ sequence
       isExecutingSequence = false;
       currentSequenceStep = 0;
-      addLog("✅ Sequence completed successfully");
+      addLog("🎯 Sequence execution completed successfully!");
+      addLog("📊 Total " + String(sequenceLength) + " commands executed");
     } else {
-      // เริ่มขั้นตอนถัดไป
-      delay(200);  // รอเล็กน้อยระหว่างขั้นตอน
+      // เริ่มขั้นตอนถัดไป (ไม่ใช้ delay เพื่อความเร็ว)
       startSequenceCommand(currentSequenceStep);
     }
   }
@@ -898,8 +1210,10 @@ void sendResponse(WiFiClient client, String message) {
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: text/plain; charset=UTF-8");
   client.println("Connection: close");
+  client.println("Cache-Control: no-cache");
   client.println();
   client.println(message);
+  client.flush(); // Force send immediately
 }
 
 // ฟังก์ชัน Web Server หลัก
@@ -907,11 +1221,20 @@ void handleWebServer() {
   WiFiClient client = server.available();
   if (!client) return;
   
+  // Set shorter timeout for faster response
+  client.setTimeout(1000);
+  
   String request = "";
-  while (client.connected() && client.available()) {
+  unsigned long startTime = millis();
+  
+  // Read request with timeout protection
+  while (client.connected() && client.available() && (millis() - startTime < 2000)) {
     String line = client.readStringUntil('\n');
     if (line.length() == 1 && line[0] == '\r') break;
     request += line + "\n";
+    
+    // Break early if we have enough data
+    if (request.length() > 1500) break;
   }
   
   // ดึง path จาก request
@@ -987,13 +1310,22 @@ void handleWebServer() {
     }
     else if (path.indexOf("?execute=1") != -1) {
       // Execute sequence
-      if (sequenceLength > 0 && !isExecutingSequence) {
-        isExecutingSequence = true;
-        currentSequenceStep = 0;
-        addLog("▶️ Starting sequence execution (" + String(sequenceLength) + " commands)");
-        startSequenceCommand(0);
+      if (sequenceLength > 0) {
+        if (isExecutingSequence) {
+          addLog("⚠️ Sequence already running - stopping current execution first");
+          stopSequence();
+          delay(200);
+        }
+        executeSequence(); // Use the improved function
+      } else {
+        addLog("❌ Cannot execute: No commands in sequence");
       }
-      sendResponse(client, "Sequence started");
+      sendResponse(client, "Sequence execution initiated");
+    }
+    else if (path.indexOf("?stop=1") != -1) {
+      // Stop sequence execution
+      stopSequence();
+      sendResponse(client, "Sequence stopped");
     }
     else {
       // Show sequence page
@@ -1068,8 +1400,94 @@ void handleWebServer() {
 }
 
 void loop() {
+  // ตรวจสอบการเชื่อมต่อ WiFi และเชื่อมต่อใหม่ถ้าจำเป็น
+  checkAndReconnectWiFi();
+  
+  // Handle web server with improved performance
   handleWebServer();
+  
+  // Process sequence execution (non-blocking)
   processSequence();
+  
+  // Check obstacle detection for continuous movement
   checkObstacleForContinuousForward();
-  delay(10);
+  
+  // Send heartbeat log every 30 seconds
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 30000) {
+    lastHeartbeat = millis();
+    
+    String connectionInfo = "";
+    if (isAPMode) {
+      connectionInfo = "AP Mode - " + connectedSSID;
+    } else if (WiFi.status() == WL_CONNECTED) {
+      int rssi = WiFi.RSSI();
+      connectionInfo = "WiFi: " + connectedSSID + " (" + String(rssi) + "dBm)";
+    } else {
+      connectionInfo = "Disconnected";
+    }
+    
+    addLog("💗 Heartbeat - " + connectionInfo + ", Uptime: " + String((millis()-startTime)/1000) + "s");
+  }
+  
+  // Reduced delay for better responsiveness
+  delay(5);
+}
+
+// ฟังก์ชันเริ่มต้น Sequence Execution
+void executeSequence() {
+  if (sequenceLength == 0) {
+    addLog("❌ Cannot execute: Sequence is empty");
+    return;
+  }
+  
+  if (isExecutingSequence) {
+    addLog("⚠️ Sequence is already running! Stopping current sequence first.");
+    isExecutingSequence = false;
+    stopMotors();
+    delay(500);
+  }
+  
+  addLog("🚀 Starting sequence execution (" + String(sequenceLength) + " commands)");
+  addLog("📊 Sequence commands overview:");
+  
+  // แสดงรายการคำสั่งทั้งหมด
+  for (int i = 0; i < sequenceLength; i++) {
+    String emoji = "🎮";
+    if (commandSequence[i].action == "FORWARD") emoji = "⬆️";
+    else if (commandSequence[i].action == "BACKWARD") emoji = "⬇️";
+    else if (commandSequence[i].action == "LEFT") emoji = "⬅️";
+    else if (commandSequence[i].action == "RIGHT") emoji = "➡️";
+    else if (commandSequence[i].action == "STOP") emoji = "⏹️";
+    
+    addLog("  " + String(i+1) + ". " + emoji + " " + commandSequence[i].action + 
+           " (" + String(commandSequence[i].duration) + "ms)");
+  }
+  
+  isExecutingSequence = true;
+  currentSequenceStep = 0;
+  sequenceStepStartTime = millis();
+  
+  // เริ่มคำสั่งแรก
+  startSequenceCommand(currentSequenceStep);
+}
+
+// ฟังก์ชันหยุด Sequence
+void stopSequence() {
+  if (isExecutingSequence) {
+    isExecutingSequence = false;
+    stopMotors();
+    addLog("⏹️ Sequence execution stopped by user at step " + String(currentSequenceStep + 1) + "/" + String(sequenceLength));
+    currentSequenceStep = 0;
+  }
+}
+
+// ฟังก์ชันล้างคำสั่งทั้งหมด
+void clearSequence() {
+  if (isExecutingSequence) {
+    stopSequence();
+  }
+  sequenceLength = 0;
+  currentSequenceStep = 0;
+  addLog("🗑️ All sequence commands cleared");
 }
